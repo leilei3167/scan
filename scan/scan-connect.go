@@ -3,6 +3,7 @@ package scan
 import (
 	"context"
 	"fmt"
+	log "github.com/sirupsen/logrus"
 	"io"
 	"net"
 	"strconv"
@@ -32,7 +33,7 @@ func NewConnectScanner(ti *TargetIterator, timeout time.Duration, paralellism in
 // Start 实际上是消费者,获取从Scan()中生产的任务,并执行扫描,将结果分类传回对应的Chan,由Scan汇总返回
 func (c *ConnectScanner) Start() error {
 	//开启协程,不断的获取job,直到端口为0
-	for i := 0; i < c.maxRoutines; i++ {
+	for i := 0; i < c.maxRoutines; i++ { //限制的是消费者的数量,永远只会有固定数量的文件操作符
 		go func() {
 			for {
 				job := <-c.jobChan //在root执行了Scan前会阻塞在此,因为通道中没有数据,任务由Scan来生产
@@ -66,6 +67,7 @@ func (c *ConnectScanner) Start() error {
 	return nil
 }
 
+// Scan 利用Channel关闭后读取会读出零值的特性,实现退出感知
 func (c *ConnectScanner) Scan(ctx context.Context, ports []int) ([]Result, error) {
 	wg := &sync.WaitGroup{}
 
@@ -75,7 +77,7 @@ func (c *ConnectScanner) Scan(ctx context.Context, ports []int) ([]Result, error
 
 	go func() { //收集结果
 		for {
-			result := <-resultChan
+			result := <-resultChan //如果resultChan收到零值则说明被关闭,执行推出
 			if result == nil {
 				close(doneChan)
 				break
@@ -84,7 +86,9 @@ func (c *ConnectScanner) Scan(ctx context.Context, ports []int) ([]Result, error
 		}
 	}()
 
-	for { //用迭代器不断生成IP,没有做并发控制,ip数量超大的话?
+	for { //用迭代器不断生成IP,没有做并发控制,ip数量超大的话?IP数量可能超大,但是消费者的数量是一定的,不会太多操作符
+		//每一个IP都要构建一个结果,不适用于大量ip扫描
+		//此处是每解析一个IP就发送下一步
 		ip, err := c.ti.Next()
 		if err != nil {
 			if err == io.EOF {
@@ -96,16 +100,17 @@ func (c *ConnectScanner) Scan(ctx context.Context, ports []int) ([]Result, error
 		wg.Add(1)
 		tIP := make([]byte, len(ip))
 		copy(tIP, ip) //防止浅拷贝将ip传入
-		go func(ip net.IP, ports []int, wg *sync.WaitGroup) {
+		//每一个IP开一个携程,每个ip的每个端口也会开携程,乘积关系,如1万个ip每个扫10个端口,将产生10万个携程
+		go func(ip net.IP, ports []int, wg2 *sync.WaitGroup) {
 			r := c.scanHost(ctx, ip, ports)
 			resultChan <- &r
-			wg.Done()
+			wg2.Done()
 		}(tIP, ports, wg)
 
 		_ = ip
 	}
 
-	wg.Wait()
+	wg.Wait() //所有任务执行完毕之前阻塞在此
 	close(resultChan)
 	close(c.jobChan)
 	<-doneChan
@@ -123,15 +128,22 @@ func (c *ConnectScanner) Stop() {
 
 //发起tcp连接,并分类
 func (c *ConnectScanner) scanPort(target net.IP, port int) (PortState, error) {
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", target.String(),
+
+	log.Debugf("开始扫描%s:%s", target.String(),
+		strconv.Itoa(port))
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%s", target.String(),
 		strconv.Itoa(port)), c.timeout)
 	if err != nil {
+		log.Debugf("%s:%s :连接失败:%v", target.String(),
+			strconv.Itoa(port), err)
 		if strings.Contains(err.Error(), "refused") {
 			return PortClosed, nil
 		}
 		return PortUnknown, err
 	}
 	conn.Close()
+	log.Debugf("%s:%s is OPEN!", target.String(),
+		strconv.Itoa(port))
 	return PortOpen, err
 }
 
@@ -177,7 +189,7 @@ func (c *ConnectScanner) scanHost(ctx context.Context, host net.IP, ports []int)
 	for _, port := range ports { //并发生产任务,多少个端口就开多少个协程
 		wg.Add(1)
 
-		go func(p int, wg *sync.WaitGroup) {
+		go func(p int, wg2 *sync.WaitGroup) {
 			done := make(chan struct{})
 
 			c.jobChan <- portJob{
@@ -186,19 +198,17 @@ func (c *ConnectScanner) scanHost(ctx context.Context, host net.IP, ports []int)
 				filtered: filteredChan,
 				ip:       host,
 				port:     p,
-				done:     done,
+				done:     done, //每个协程单独创建的,在被消费之后会被释放
 				ctx:      ctx,
 			}
-
-			<-done //阻塞直到这个任务被消费(扫描完毕)
-			wg.Done()
+			<-done //阻塞直到这个任务被消费(扫描完毕会被关闭,取出0值解除阻塞)
+			wg2.Done()
 		}(port, wg)
 	}
 
 	wg.Wait()
-	//接触阻塞后说明所有的任务被处理完毕,可以关闭并返回结果
+	//解除阻塞后说明所有的任务被处理完毕,可以关闭并返回结果
 	close(openChan) //关闭后 收集结果的Chan将接收到零值
-	//TODO:未阻塞
-	<-doneChan //读出零值后,收集Chan也会关闭doneChan,确保其关闭后这里才会接触阻塞
+	<-doneChan      //读出零值后,收集Chan也会关闭doneChan,确保其关闭后这里才会解除阻塞
 	return result
 }

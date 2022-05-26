@@ -11,7 +11,7 @@ import (
 type Scanner interface {
 	Stop()                                                   //可以停止
 	Start() error                                            //可以开始
-	Scan(ctx context.Context, ports []int) ([]Result, error) //扫描需要一个ctx 端口,返回结果或者错误
+	Scan(ctx context.Context, ports []int) ([]Result, error) //解析IP组装ports 创建任务并分发,最终汇总结果
 	OutPutReault(resul Result)                               //对外输出结果
 }
 
@@ -47,12 +47,12 @@ func (r Result) String() string {
 	text := fmt.Sprintf("Scan result for %s:\n", r.Host.String()) //调用IP的String方法打印成字符串
 	if r.IsHostUp() {
 		//一步一步组合text
-		text = fmt.Sprintf("%v\tHost is up with latency %v\n", text, r.Latency.String())
+		text = fmt.Sprintf("%v\tHost is up with latency %v\n", text, r.Latency)
 	} else {
 		text = fmt.Sprintf("%v\tHost is down!", text)
 	}
 	if len(r.Open) > 0 {
-		text = fmt.Sprintf("%s\t%s\t%s\t%s\t\n",
+		text = fmt.Sprintf("%s\t\t%s\t\t\t%s\t\t\t%s\t\n",
 			text, "PORT", "STATE", "SERVICE")
 	}
 
@@ -62,9 +62,10 @@ func (r Result) String() string {
 			text,
 			pad(fmt.Sprintf("%d/tcp", port), 10), // 8080/tcp
 			pad("OPEN", 10),
-			DescribePort(port), //TODO:从一个已知的端口详情map中返回描述
+			DescribePort(port),
 		)
 	}
+	fmt.Println("----------------------------------------------------------------------------------------")
 	return text
 
 }

@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -12,7 +11,6 @@ import (
 	"scan/scan"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -24,8 +22,6 @@ var portSelection string      //指定端口
 var scanType = "connect"      //扫描模式
 var hideUnavailableHosts bool //省略无效的host
 var versionRequested bool     //打印版本
-
-//初始话命令
 
 func init() {
 	//带P的表示同时可接收缩写选项,P代表可以设置短指令
@@ -42,6 +38,7 @@ func createScanner(ti *scan.TargetIterator, scanType string,
 	timeout time.Duration, routines int) (scan.Scanner, error) {
 	//根据scanType来选择扫描模式
 	switch strings.ToLower(scanType) {
+
 	case "stealth", "syn", "fast": //SYN扫描
 		if os.Geteuid() > 0 { //用于判断是否是root用户
 			return nil, fmt.Errorf("permission denied")
@@ -53,12 +50,14 @@ func createScanner(ti *scan.TargetIterator, scanType string,
 	case "device": //设备扫描
 
 	}
+
 	return nil, fmt.Errorf("未知扫描模式:%v", scanType)
 }
 
-var rootCmd = &cobra.Command{
+var rootCmd = &cobra.Command{ //rootCmd就是程序真正的入口
 	Use:   "scanner",
 	Short: "high performance scanner!",
+	//主要的执行函数,这里就是根据scanType来选择创建不同的scanner进行扫描
 	Run: func(cmd *cobra.Command, args []string) { //主要的执行函数
 		if versionRequested {
 			fmt.Println("development version")
@@ -83,11 +82,12 @@ var rootCmd = &cobra.Command{
 		//设置一个主动取消的机制
 		ctx, cancel := context.WithCancel(context.Background())
 		c := make(chan os.Signal, 1)
-		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+		signal.Notify(c, os.Interrupt)
 		go func() {
 			<-c //阻塞直到有信号
 			fmt.Println("退出...")
 			cancel()
+			os.Exit(1)
 		}()
 
 		start := time.Now()
@@ -97,14 +97,15 @@ var rootCmd = &cobra.Command{
 		for _, target := range args {
 			//对输入的参数进行解析,构建迭代器(如果是CIDR则会含有ipnet等字段)
 			targetinterator := scan.NewTargetInteractor(target)
-			//对迭代器创建扫描器
-			scanner, err := createScanner(targetinterator, scanType, time.Duration(timeoutMS), parallelism)
+
+			//TODO:注意体会接口用法,以下所有的代码,在新增扫描器时无需再修改!
+			scanner, err := createScanner(targetinterator, scanType, time.Millisecond*time.Duration(timeoutMS), parallelism)
 			if err != nil {
 				log.Fatal(err)
 			}
 
 			log.Debugf("开始扫描...")
-			if err := scanner.Start(); err != nil {
+			if err := scanner.Start(); err != nil { //创建消费者
 				log.Fatal(err)
 			}
 			log.Debugf("开始扫描:%v", target)
@@ -136,8 +137,7 @@ func Execute() {
 
 func getPorts(selection string) ([]int, error) {
 	if selection == "" {
-		//TODO:使用内置的端口
-		return nil, errors.New("请指定端口!")
+		return scan.DefaultPorts, nil
 	}
 
 	ports := []int{}
