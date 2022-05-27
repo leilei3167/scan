@@ -43,6 +43,7 @@ func createScanner(ti *scan.TargetIterator, scanType string,
 		if os.Geteuid() > 0 { //用于判断是否是root用户
 			return nil, fmt.Errorf("permission denied")
 		}
+		return scan.NewSynScanner(ti, timeout, routines), nil
 
 	case "connect": //TCP连接扫描
 		return scan.NewConnectScanner(ti, timeout, routines), nil
