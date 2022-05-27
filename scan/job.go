@@ -17,7 +17,7 @@ type portJob struct {
 	ctx      context.Context //用于控制
 }
 
-//用于主机扫描
+//用于syn扫描
 type hostJob struct {
 	ip         net.IP
 	ports      []int

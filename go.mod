@@ -3,6 +3,9 @@ module scan
 go 1.18
 
 require (
+	github.com/google/gopacket v1.1.19
+	github.com/mostlygeek/arp v0.0.0-20170424181311-541a2129847a
+	github.com/phayes/freeport v0.0.0-20220201140144-74d24b5ae9f5
 	github.com/sirupsen/logrus v1.8.1
 	github.com/spf13/cobra v1.4.0
 )
